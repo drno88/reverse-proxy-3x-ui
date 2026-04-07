@@ -176,64 +176,154 @@ install_acme() {
 PANEL_USER=""
 PANEL_PASS=""
 
-# ── Configure 3x-ui settings via SQLite ──────────────────────────────────────
+# ── Configure 3x-ui settings ─────────────────────────────────────────────────
 configure_3xui() {
     local db="/etc/x-ui/x-ui.db"
     [[ -f "$db" ]] || { warn "БД 3x-ui не найдена: $db"; return; }
 
-    # Install sqlite3 if needed (silently)
     if ! command -v sqlite3 &>/dev/null; then
         wait_dpkg
-        apt-get install -y sqlite3 -qq 2>/dev/null || { warn "sqlite3 не удалось установить, настройте панель вручную"; return; }
+        apt-get install -y sqlite3 -qq 2>/dev/null || { warn "sqlite3 не удалось установить"; return; }
     fi
 
     info "Настраиваем 3x-ui: порт=$PANEL_PORT, path=$PANEL_PATH..."
 
-    # DELETE + INSERT to avoid duplicates (settings table has no UNIQUE on key)
-    # Note: webCertFile/webKeyFile NOT set — SSL is handled by nginx, x-ui runs plain HTTP
+    # port + basePath via SQLite (no UNIQUE on key — use DELETE+INSERT)
     sqlite3 "$db" "
         DELETE FROM settings WHERE key IN ('webPort','webBasePath','webCertFile','webKeyFile');
         INSERT INTO settings (key, value) VALUES ('webPort',     '$PANEL_PORT');
         INSERT INTO settings (key, value) VALUES ('webBasePath', '$PANEL_PATH');
     " || { warn "Ошибка записи в БД 3x-ui"; return; }
 
-    # Set admin credentials (generate random, hash with bcrypt via python3)
+    # credentials via x-ui CLI (handles bcrypt internally)
     PANEL_USER="admin"
-    PANEL_PASS="$(gen_random_string 12)"
-    local hashed
-    hashed=$(python3 -c "
-import hashlib, os, base64, struct
-# bcrypt via built-in is not available; use a simple approach via subprocess
-import subprocess, sys
-try:
-    import bcrypt
-    h = bcrypt.hashpw('${PANEL_PASS}'.encode(), bcrypt.gensalt(rounds=10)).decode()
-    print(h)
-except ImportError:
-    # fallback: install bcrypt
-    subprocess.run([sys.executable, '-m', 'pip', 'install', 'bcrypt', '-q'], capture_output=True)
-    import bcrypt
-    h = bcrypt.hashpw('${PANEL_PASS}'.encode(), bcrypt.gensalt(rounds=10)).decode()
-    print(h)
-" 2>/dev/null) || true
-
-    if [[ -n "$hashed" ]]; then
-        sqlite3 "$db" "
-            DELETE FROM users;
-            INSERT INTO users (username, password) VALUES ('$PANEL_USER', '$hashed');
-        " && info "Учётные данные панели обновлены"
+    PANEL_PASS="$(gen_random_string 14)"
+    if /usr/local/x-ui/x-ui setting \
+            -username  "$PANEL_USER" \
+            -password  "$PANEL_PASS" \
+            -resetTwoFactor false >/dev/null 2>&1; then
+        info "Логин/пароль панели обновлены"
     else
-        # Can't hash — read existing username, leave password as-is
         PANEL_USER=$(sqlite3 "$db" "SELECT username FROM users LIMIT 1;" 2>/dev/null || echo "?")
-        PANEL_PASS="(оставлен без изменений — задан при установке 3x-ui)"
-        warn "Не удалось сгенерировать пароль — используйте существующий логин: $PANEL_USER"
+        PANEL_PASS="(не изменён — задан при установке)"
+        warn "Не удалось сменить пароль панели — используйте тот что задали при установке"
     fi
 
     systemctl restart x-ui
     sleep 2
     systemctl is-active --quiet x-ui \
-        && info "3x-ui перезапущен с новыми настройками" \
-        || warn "x-ui не запустился после настройки — проверьте: systemctl status x-ui"
+        && info "3x-ui перезапущен" \
+        || warn "x-ui не запустился — проверьте: systemctl status x-ui"
+}
+
+# ── Create inbounds in 3x-ui via API ─────────────────────────────────────────
+create_inbounds() {
+    [[ -z "$PANEL_USER" || -z "$PANEL_PASS" ]] && return
+    [[ "$PANEL_PASS" == *"не изменён"* ]] && {
+        warn "Пропускаем создание inbound'ов — пароль неизвестен, настройте вручную"
+        return
+    }
+
+    local base="http://127.0.0.1:${PANEL_PORT}${PANEL_PATH}"
+    local cook
+    cook=$(mktemp)
+    trap "rm -f $cook" RETURN
+
+    # Login
+    local login_resp
+    login_resp=$(curl -s -c "$cook" -X POST "${base}/login" \
+        -d "username=${PANEL_USER}&password=${PANEL_PASS}" 2>/dev/null)
+    if ! echo "$login_resp" | grep -q '"success":true'; then
+        warn "Не удалось войти в панель через API — inbound'ы настройте вручную"
+        return
+    fi
+
+    info "Создаём inbound'ы в 3x-ui..."
+
+    # Helper: POST inbound JSON to API
+    add_inbound() {
+        local payload="$1" remark="$2"
+        local resp
+        resp=$(curl -s -b "$cook" -X POST "${base}/panel/api/inbounds/add" \
+            -H "Content-Type: application/json" \
+            -d "$payload" 2>/dev/null)
+        if echo "$resp" | grep -q '"success":true'; then
+            info "Inbound создан: $remark"
+        else
+            local msg
+            msg=$(echo "$resp" | grep -o '"msg":"[^"]*"' | head -1)
+            warn "Inbound $remark: $msg (возможно уже существует)"
+        fi
+    }
+
+    # Build all 4 inbound payloads via python3 (clean JSON, no quoting issues)
+    local payloads_file
+    payloads_file=$(mktemp)
+    python3 - << PYEOF > "$payloads_file"
+import json
+
+sniff   = {"enabled": True, "destOverride": ["http","tls","quic","fakedns"], "metadataOnly": False, "routeOnly": False}
+clients = {"clients": [], "decryption": "none", "fallbacks": []}
+
+inbounds = [
+    {
+        "remark": "VLESS-WS",
+        "enable": True, "listen": "", "protocol": "vless",
+        "port": ${WS_PORT},
+        "settings":       json.dumps(clients),
+        "streamSettings": json.dumps({"network": "ws", "security": "none", "externalProxy": [],
+                          "wsSettings": {"acceptProxyProtocol": False, "path": "${WS_PATH}", "host": "", "headers": {}}}),
+        "sniffing":       json.dumps(sniff),
+        "tag": "inbound-${WS_PORT}"
+    },
+    {
+        "remark": "VLESS-gRPC",
+        "enable": True, "listen": "", "protocol": "vless",
+        "port": ${GRPC_PORT},
+        "settings":       json.dumps(clients),
+        "streamSettings": json.dumps({"network": "grpc", "security": "none", "externalProxy": [],
+                          "grpcSettings": {"serviceName": "${GRPC_SERVICE}", "authority": "", "multiMode": False}}),
+        "sniffing":       json.dumps(sniff),
+        "tag": "inbound-${GRPC_PORT}"
+    },
+    {
+        "remark": "VLESS-XHTTP",
+        "enable": True, "listen": "", "protocol": "vless",
+        "port": ${XHTTP_PORT},
+        "settings":       json.dumps(clients),
+        "streamSettings": json.dumps({"network": "xhttp", "security": "none", "externalProxy": [],
+                          "xhttpSettings": {"path": "${XHTTP_PATH}", "host": "", "headers": {}, "mode": "auto"}}),
+        "sniffing":       json.dumps(sniff),
+        "tag": "inbound-${XHTTP_PORT}"
+    },
+    {
+        "remark": "VLESS-Reality",
+        "enable": True, "listen": "", "protocol": "vless",
+        "port": ${REALITY_PORT},
+        "settings":       json.dumps(clients),
+        "streamSettings": json.dumps({"network": "tcp", "security": "reality", "externalProxy": [],
+                          "tcpSettings": {"acceptProxyProtocol": False, "header": {"type": "none"}},
+                          "realitySettings": {"show": False, "xver": 0,
+                              "dest": "microsoft.com:443",
+                              "serverNames": ["microsoft.com","www.microsoft.com"],
+                              "privateKey": "", "minClient": "", "maxClient": "",
+                              "maxTimeDiff": 0, "shortIds": [""],
+                              "fingerprint": "chrome", "headers": {}}}),
+        "sniffing":       json.dumps(sniff),
+        "tag": "inbound-${REALITY_PORT}"
+    },
+]
+
+for ib in inbounds:
+    print(json.dumps(ib))
+PYEOF
+
+    while IFS= read -r payload; do
+        local remark
+        remark=$(echo "$payload" | python3 -c "import json,sys; print(json.load(sys.stdin)['remark'])" 2>/dev/null || echo "?")
+        add_inbound "$payload" "$remark"
+    done < "$payloads_file"
+    rm -f "$payloads_file"
 }
 
 # ── Install 3x-ui ─────────────────────────────────────────────────────────────
@@ -289,8 +379,9 @@ install_3xui() {
         sleep 2
     fi
 
-    # Always configure with our settings (port, path, SSL)
+    # Always configure with our settings (port, path, credentials)
     configure_3xui
+    create_inbounds
 }
 
 # ── Obtain SSL certificate via acme.sh ───────────────────────────────────────
