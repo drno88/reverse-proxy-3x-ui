@@ -410,6 +410,14 @@ get_ssl() {
 
     mkdir -p "$cert_dir"
 
+    # Check if ports 80 and 443 are in use (before stopping nginx)
+    if is_port_in_use 80; then
+        die "Порт 80 уже занят. Остановите сервис, слушающий на порту 80, и попробуйте снова."
+    fi
+    if is_port_in_use 443; then
+        die "Порт 443 уже занят. Остановите сервис, слушающий на порту 443, и попробуйте снова."
+    fi
+
     warn "Для ACME HTTP-01 challenge порт 80 должен быть доступен из интернета"
     warn "Временно останавливаем nginx..."
     systemctl stop nginx 2>/dev/null || true
