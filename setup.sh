@@ -99,9 +99,10 @@ is_port_in_use() {
 }
 
 # Prompt for a port with default and conflict check
-# Usage: read_port VAR_NAME "Description" DEFAULT
+# Usage: read_port VAR_NAME "Description" DEFAULT [TRUSTED_PORT]
+# TRUSTED_PORT — port already in use by our own service (skip conflict warning)
 read_port() {
-    local varname="$1" desc="$2" default="$3" val
+    local varname="$1" desc="$2" default="$3" trusted="${4:-}" val
     while true; do
         ask "$desc [Enter = $default]:"
         read -r val
@@ -110,7 +111,7 @@ read_port() {
             err "Некорректный порт: $val (допустимо 1-65535)"
             continue
         fi
-        if is_port_in_use "$val"; then
+        if [[ "$val" != "$trusted" ]] && is_port_in_use "$val"; then
             warn "Порт $val уже занят — выберите другой или убедитесь что это правильный порт"
             ask "Всё равно использовать $val? [y/N]:"
             read -r force
@@ -671,7 +672,7 @@ ask_questions() {
     fi
 
     local default_port="${detected_port:-2053}"
-    read_port PANEL_PORT "Порт панели 3x-ui" "$default_port"
+    read_port PANEL_PORT "Порт панели 3x-ui" "$default_port" "$detected_port"
     echo ""
 
     # ── WebSocket ────────────────────────────────────────────────────────────
