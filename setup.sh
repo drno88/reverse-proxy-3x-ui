@@ -29,6 +29,9 @@ die()   { err "$*"; exit 1; }
 # ── Root check ────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Запустите от root: sudo bash setup.sh"
 
+# ── Global state ──────────────────────────────────────────────────────────────
+PROXY_PANEL=true   # proxy panel through nginx (set in ask_questions)
+
 # ── OS detection ──────────────────────────────────────────────────────────────
 detect_os() {
     if [[ -f /etc/os-release ]]; then
@@ -324,6 +327,24 @@ write_nginx_config() {
         fi
     done
 
+    # Build panel location block (only if proxying panel)
+    local panel_location_block=""
+    if [[ "$PROXY_PANEL" == true ]]; then
+        panel_location_block="
+    # ── 3x-ui Panel: ${PANEL_PATH} ───────────────────────────────────────────
+    location ${PANEL_PATH}/ {
+        proxy_pass         http://127.0.0.1:${PANEL_PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection \"upgrade\";
+        proxy_read_timeout 86400;
+    }"
+    fi
+
     cat > "$conf_file" << NGINX_EOF
 # ==============================================================================
 # 3x-ui Reverse Proxy: ${DOMAIN}
@@ -362,21 +383,7 @@ server {
     # ── Logs ─────────────────────────────────────────────────────────────────
     access_log /var/log/nginx/${DOMAIN}_access.log;
     error_log  /var/log/nginx/${DOMAIN}_error.log;
-
-    # ── 3x-ui Panel: ${PANEL_PATH} ───────────────────────────────────────────
-    # ВАЖНО: В 3x-ui → Настройки панели → URI Path → установите: ${PANEL_PATH}
-    location ${PANEL_PATH}/ {
-        proxy_pass         http://127.0.0.1:${PANEL_PORT}/;
-        proxy_http_version 1.1;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
-        proxy_read_timeout 86400;
-    }
-
+${panel_location_block}
     # ── VLESS + WebSocket: ${WS_PATH} ────────────────────────────────────────
     # Xray inbound → port: ${WS_PORT}  transport: ws  path: ${WS_PATH}  TLS: none
     location ${WS_PATH} {
@@ -606,13 +613,22 @@ ask_questions() {
     echo ""
 
     # ── Panel ────────────────────────────────────────────────────────────────
-    local default_panel="$(gen_random_string "$(gen_random_path_len)")"
-    echo -e "${dim}Советы для пути панели: /cloud  /files  /inbox  /webdav  /storage  /portal${plain}"
-    ask "Путь к панели 3x-ui [Enter = /$default_panel]:"
-    read -r PANEL_PATH
-    PANEL_PATH=$(normalize_path "${PANEL_PATH:-$default_panel}")
+    echo -e "${dim}Если панель проксируется через Nginx — она доступна по HTTPS на вашем домене."
+    echo -e "Если нет — только через SSH tunnel (ssh -L 2053:127.0.0.1:2053 root@сервер).${plain}"
+    if confirm "Проксировать панель 3x-ui через Nginx?"; then
+        PROXY_PANEL=true
+        local default_panel="$(gen_random_string "$(gen_random_path_len)")"
+        echo -e "${dim}Советы для пути панели: /cloud  /files  /inbox  /webdav  /storage  /portal${plain}"
+        ask "Путь к панели 3x-ui [Enter = /$default_panel]:"
+        read -r PANEL_PATH
+        PANEL_PATH=$(normalize_path "${PANEL_PATH:-$default_panel}")
+    else
+        PROXY_PANEL=false
+        PANEL_PATH=""
+        warn "Панель будет доступна только через SSH tunnel"
+    fi
 
-    read_port PANEL_PORT "Порт панели 3x-ui (проверьте в настройках)" "2053"
+    read_port PANEL_PORT "Порт панели 3x-ui" "2053"
     echo ""
 
     # ── WebSocket ────────────────────────────────────────────────────────────
@@ -657,7 +673,11 @@ ask_questions() {
     echo -e "${cyan}${bold}└─────────────────────────────────────────────────────────┘${plain}"
     echo ""
     echo -e "  Домен:           ${bold}$DOMAIN${plain}"
-    echo -e "  Панель:          ${bold}https://$DOMAIN$PANEL_PATH/${plain}  →  localhost:$PANEL_PORT"
+    if [[ "$PROXY_PANEL" == true ]]; then
+        echo -e "  Панель:          ${bold}https://$DOMAIN$PANEL_PATH/${plain}  →  localhost:$PANEL_PORT"
+    else
+        echo -e "  Панель:          ${bold}localhost:$PANEL_PORT${plain} (только SSH tunnel, без Nginx)"
+    fi
     echo -e "  VLESS+WS:        ${bold}$WS_PATH${plain}  →  localhost:$WS_PORT"
     echo -e "  VLESS+gRPC:      serviceName=${bold}$GRPC_SERVICE${plain}  →  localhost:$GRPC_PORT"
     echo -e "  VLESS+XHTTP:     ${bold}$XHTTP_PATH${plain}  →  localhost:$XHTTP_PORT"
@@ -676,10 +696,15 @@ show_instructions() {
     echo ""
 
     echo -e "${bold}━━━ Доступ к панели ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${plain}"
-    echo -e "  URL: ${green}https://$DOMAIN$PANEL_PATH/${plain}"
-    echo ""
-    echo -e "  ${yellow}!${plain} В панели: Настройки → Настройки панели → URI Path → ${bold}$PANEL_PATH${plain}"
-    echo -e "    (без этого ссылки внутри панели могут не работать)"
+    if [[ "$PROXY_PANEL" == true ]]; then
+        echo -e "  URL: ${green}https://$DOMAIN$PANEL_PATH/${plain}"
+        echo ""
+        echo -e "  ${yellow}!${plain} URI Path уже настроен автоматически в 3x-ui: ${bold}$PANEL_PATH${plain}"
+    else
+        echo -e "  Панель доступна ${bold}только через SSH tunnel${plain}:"
+        echo -e "  ${dim}ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@<IP сервера>${plain}"
+        echo -e "  Затем открыть: ${green}http://localhost:$PANEL_PORT${plain}"
+    fi
     echo ""
 
     echo -e "${bold}━━━ Настройка inbound'ов в 3x-ui ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${plain}"
@@ -745,7 +770,11 @@ show_instructions() {
     echo -e "  Логи fail2ban:  ${dim}tail -f /var/log/fail2ban.log${plain}"
     echo ""
 
-    info "Готово! Откройте ${green}https://$DOMAIN$PANEL_PATH/${plain}"
+    if [[ "$PROXY_PANEL" == true ]]; then
+        info "Готово! Откройте ${green}https://$DOMAIN$PANEL_PATH/${plain}"
+    else
+        info "Готово! Подключитесь через SSH tunnel и откройте ${green}http://localhost:$PANEL_PORT${plain}"
+    fi
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
