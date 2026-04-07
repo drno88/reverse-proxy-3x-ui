@@ -311,11 +311,11 @@ inbounds = [
         "streamSettings": json.dumps({"network": "tcp", "security": "reality", "externalProxy": [],
                           "tcpSettings": {"acceptProxyProtocol": False, "header": {"type": "none"}},
                           "realitySettings": {"show": False, "xver": 0,
-                              "dest": "microsoft.com:443",
-                              "serverNames": ["microsoft.com","www.microsoft.com"],
+                              "dest": "apple.com:443",
+                              "serverNames": [],
                               "privateKey": "", "minClient": "", "maxClient": "",
                               "maxTimeDiff": 0, "shortIds": [""],
-                              "fingerprint": "chrome", "headers": {}}}),
+                              "fingerprint": "qq", "headers": {}}}),
         "sniffing":       json.dumps(sniff),
         "tag": "inbound-${REALITY_PORT}"
     },
@@ -903,7 +903,9 @@ show_instructions() {
     echo -e "   Xray порт:     ${bold}$REALITY_PORT${plain}  (публичный, без Nginx)"
     echo -e "   Transport:     TCP / XTLS-Vision"
     echo -e "   TLS:           Reality"
-    echo -e "   SNI-цель:      например ${bold}microsoft.com:443${plain} или ${bold}apple.com:443${plain}"
+    echo -e "   Target/dest:   ${bold}apple.com:443${plain}"
+   echo -e "   uTLS:          ${bold}qq${plain}"
+   echo -e "   SNI:           ${bold}(пустой)${plain}"
     echo -e "   ${yellow}Reality НЕ проходит через Nginx — подключение прямое!${plain}"
     echo -e "   ${dim}Клиент: host=<IP сервера>  port=$REALITY_PORT${plain}"
     echo ""
