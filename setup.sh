@@ -299,7 +299,7 @@ inbounds = [
         "port": ${XHTTP_PORT},
         "settings":       json.dumps(clients),
         "streamSettings": json.dumps({"network": "xhttp", "security": "none", "externalProxy": [],
-                          "xhttpSettings": {"path": "${XHTTP_PATH}", "host": "", "headers": {}, "mode": "auto"}}),
+                          "xhttpSettings": {"path": "${XHTTP_PATH}", "host": "", "headers": {}, "mode": "packet-up"}}),
         "sniffing":       json.dumps(sniff),
         "tag": "inbound-${XHTTP_PORT}"
     },
