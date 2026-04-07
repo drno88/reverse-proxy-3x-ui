@@ -207,9 +207,26 @@ install_3xui() {
         || systemctl list-units --full -all 2>/dev/null | grep -q "x-ui.service"; then
         already_installed=true
         info "3x-ui уже установлен"
+
+        # Fix broken install: binary exists but service unit missing
+        if ! systemctl list-units --full -all 2>/dev/null | grep -q "x-ui.service"; then
+            warn "Сервис x-ui не зарегистрирован (прерванная установка?), регистрируем..."
+            local svc_file
+            for f in /usr/local/x-ui/x-ui.service.debian /usr/local/x-ui/x-ui.service; do
+                [[ -f "$f" ]] && svc_file="$f" && break
+            done
+            if [[ -n "${svc_file:-}" ]]; then
+                cp "$svc_file" /etc/systemd/system/x-ui.service
+                systemctl daemon-reload
+                info "Сервис x-ui зарегистрирован"
+            else
+                warn "Файл сервиса не найден — переустановите 3x-ui вручную"
+            fi
+        fi
+
         systemctl is-active --quiet x-ui \
             && info "Сервис x-ui запущен" \
-            || { warn "Сервис x-ui не запущен, запускаем..."; systemctl start x-ui; sleep 2; }
+            || { warn "Сервис x-ui не запущен, запускаем..."; systemctl enable --now x-ui; sleep 2; }
     fi
 
     if [[ "$already_installed" == false ]]; then
