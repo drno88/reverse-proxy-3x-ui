@@ -630,22 +630,45 @@ ask_questions() {
     echo ""
 
     # ── Panel ────────────────────────────────────────────────────────────────
+    local xui_db="/etc/x-ui/x-ui.db"
+    local detected_port="" detected_path=""
+
+    # If 3x-ui is already installed — read existing port/path from DB
+    if [[ -f "$xui_db" ]]; then
+        if ! command -v sqlite3 &>/dev/null; then
+            apt-get install -y sqlite3 -qq 2>/dev/null || true
+        fi
+        if command -v sqlite3 &>/dev/null; then
+            detected_port=$(sqlite3 "$xui_db" "SELECT value FROM settings WHERE key='webPort';" 2>/dev/null || true)
+            detected_path=$(sqlite3 "$xui_db" "SELECT value FROM settings WHERE key='webBasePath';" 2>/dev/null || true)
+            detected_path=$(normalize_path "${detected_path:-}")
+        fi
+    fi
+
     echo -e "${dim}Если панель проксируется через Nginx — она доступна по HTTPS на вашем домене."
     echo -e "Если нет — только через SSH tunnel (ssh -L 2053:127.0.0.1:2053 root@сервер).${plain}"
     if confirm "Проксировать панель 3x-ui через Nginx?"; then
         PROXY_PANEL=true
-        local default_panel="$(gen_random_string "$(gen_random_path_len)")"
-        echo -e "${dim}Советы для пути панели: /cloud  /files  /inbox  /webdav  /storage  /portal${plain}"
-        ask "Путь к панели 3x-ui [Enter = /$default_panel]:"
-        read -r PANEL_PATH
-        PANEL_PATH=$(normalize_path "${PANEL_PATH:-$default_panel}")
+        if [[ -n "$detected_path" && -n "$detected_port" ]]; then
+            info "3x-ui уже установлен: порт=${detected_port}, путь=${detected_path}"
+            ask "Путь к панели [Enter = $detected_path]:"
+            read -r PANEL_PATH
+            PANEL_PATH=$(normalize_path "${PANEL_PATH:-$detected_path}")
+        else
+            local default_panel="$(gen_random_string "$(gen_random_path_len)")"
+            echo -e "${dim}Советы для пути панели: /cloud  /files  /inbox  /webdav  /storage  /portal${plain}"
+            ask "Путь к панели 3x-ui [Enter = /$default_panel]:"
+            read -r PANEL_PATH
+            PANEL_PATH=$(normalize_path "${PANEL_PATH:-$default_panel}")
+        fi
     else
         PROXY_PANEL=false
-        PANEL_PATH=""
+        PANEL_PATH="${detected_path}"
         warn "Панель будет доступна только через SSH tunnel"
     fi
 
-    read_port PANEL_PORT "Порт панели 3x-ui" "2053"
+    local default_port="${detected_port:-2053}"
+    read_port PANEL_PORT "Порт панели 3x-ui" "$default_port"
     echo ""
 
     # ── WebSocket ────────────────────────────────────────────────────────────
