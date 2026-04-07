@@ -268,6 +268,16 @@ write_nginx_config() {
         warn "Отключили nginx default сайт"
     fi
 
+    # Remove any previously generated 3x-ui configs (e.g. old domain)
+    for old_link in /etc/nginx/sites-enabled/*.conf; do
+        [[ -f "$old_link" ]] || continue
+        [[ "$old_link" == "$conf_link" ]] && continue
+        if grep -q "3x-ui Reverse Proxy" "$old_link" 2>/dev/null; then
+            rm -f "$old_link"
+            warn "Удалён старый конфиг: $old_link"
+        fi
+    done
+
     cat > "$conf_file" << NGINX_EOF
 # ==============================================================================
 # 3x-ui Reverse Proxy: ${DOMAIN}
