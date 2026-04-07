@@ -433,7 +433,7 @@ get_ssl() {
     ~/.acme.sh/acme.sh --installcert -d "${DOMAIN}" \
         --key-file   "$key_file" \
         --fullchain-file "$cert_file" \
-        --reloadcmd  "systemctl reload nginx" \
+        --reloadcmd  "systemctl enable nginx && systemctl restart nginx" \
         2>&1 || true  # reloadcmd might fail first time, check files instead
 
     if [[ ! -f "$cert_file" || ! -f "$key_file" ]]; then
