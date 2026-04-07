@@ -534,7 +534,7 @@ wait_dpkg() {
     done
 }
 
-# ── Install & configure fail2ban ──────────────────────────────────────────────
+# ── Install fail2ban ──────────────────────────────────────────────────────────
 install_fail2ban() {
     step "fail2ban"
 
@@ -546,65 +546,31 @@ install_fail2ban() {
         info "fail2ban уже установлен: $(fail2ban-client version 2>&1 | head -1)"
     fi
 
-    # Write jail config for nginx + 3x-ui panel
-    cat > /etc/fail2ban/jail.d/3xui-nginx.conf << F2B_EOF
-# fail2ban jails for 3x-ui + nginx
-# Generated: $(date)
-
-[DEFAULT]
-bantime  = 1h
-findtime = 10m
-maxretry = 5
-banaction = iptables-multiport
-
-# Nginx: слишком много 4xx ошибок (сканеры, перебор путей)
-[nginx-4xx]
-enabled  = true
-port     = http,https
-logpath  = /var/log/nginx/${DOMAIN}_access.log
-           /var/log/nginx/*_access.log
-filter   = nginx-4xx
-maxretry = 20
-findtime = 5m
-bantime  = 30m
-
-# Nginx: брутфорс панели (401/403 на пути панели)
-[nginx-panel-auth]
-enabled  = true
-port     = http,https
-logpath  = /var/log/nginx/${DOMAIN}_access.log
-filter   = nginx-panel-auth
-maxretry = 10
-findtime = 5m
-bantime  = 2h
-F2B_EOF
-
-    # Filter: nginx 4xx
-    cat > /etc/fail2ban/filter.d/nginx-4xx.conf << 'FILTER_EOF'
-[Definition]
-failregex = ^<HOST> -.*"(GET|POST|HEAD|PUT|DELETE|OPTIONS).*" (400|401|403|404|405) (?!200|301|302)
-ignoreregex = \.(?:css|js|ico|png|jpg|gif|svg|woff|woff2|ttf|eot)(\?.*)?$
-FILTER_EOF
-
-    # Filter: panel brute force
-    cat > /etc/fail2ban/filter.d/nginx-panel-auth.conf << FILTER_EOF
-[Definition]
-failregex = ^<HOST> -.*"(GET|POST) ${PANEL_PATH}.*" (401|403)
-ignoreregex =
-FILTER_EOF
-
     systemctl enable --now fail2ban
-    systemctl restart fail2ban
+    info "fail2ban запущен"
 
-    # Give it a moment to start
-    sleep 2
-    if fail2ban-client status &>/dev/null; then
-        info "fail2ban запущен"
-        fail2ban-client status nginx-4xx &>/dev/null      && info "Jail nginx-4xx активен"
-        fail2ban-client status nginx-panel-auth &>/dev/null && info "Jail nginx-panel-auth активен"
-    else
-        warn "fail2ban запущен, но статус не удалось проверить (это нормально при первом старте)"
-    fi
+    # ── Custom jails (закомментировано) ───────────────────────────────────────
+    # Если нужна дополнительная защита — раскомментируй и настрой под себя:
+    #
+    # cat > /etc/fail2ban/jail.d/3xui-nginx.conf << F2B_EOF
+    # [nginx-4xx]
+    # enabled  = true
+    # port     = http,https
+    # logpath  = /var/log/nginx/${DOMAIN}_access.log
+    # filter   = nginx-4xx
+    # maxretry = 20
+    # findtime = 5m
+    # bantime  = 30m
+    #
+    # [nginx-panel-auth]
+    # enabled  = true
+    # port     = http,https
+    # logpath  = /var/log/nginx/${DOMAIN}_access.log
+    # filter   = nginx-panel-auth
+    # maxretry = 10
+    # findtime = 5m
+    # bantime  = 2h
+    # F2B_EOF
 }
 
 # ── Interactive questions ─────────────────────────────────────────────────────
@@ -793,21 +759,11 @@ show_instructions() {
     echo ""
     echo ""
 
-    echo -e "${bold}━━━ fail2ban ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${plain}"
-    echo -e "  Активные jails:"
-    echo -e "    nginx-4xx         — бан при >20 ошибках 4xx за 5 мин (бан 30 мин)"
-    echo -e "    nginx-panel-auth  — бан при >10 ошибках 401/403 на панели (бан 2 ч)"
-    echo -e "  Статус:   ${dim}fail2ban-client status${plain}"
-    echo -e "  Забаненые: ${dim}fail2ban-client status nginx-4xx${plain}"
-    echo ""
-
     echo -e "${bold}━━━ Файлы ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${plain}"
     echo -e "  Nginx конфиг:   /etc/nginx/sites-available/${DOMAIN}.conf"
     echo -e "  SSL сертификат: /root/cert/${DOMAIN}/"
-    echo -e "  fail2ban jail:  /etc/fail2ban/jail.d/3xui-nginx.conf"
     echo -e "  Проверить:      ${dim}nginx -t && systemctl reload nginx${plain}"
     echo -e "  Логи nginx:     ${dim}tail -f /var/log/nginx/${DOMAIN}_error.log${plain}"
-    echo -e "  Логи fail2ban:  ${dim}tail -f /var/log/fail2ban.log${plain}"
     echo ""
 
     if [[ "$PROXY_PANEL" == true ]]; then
