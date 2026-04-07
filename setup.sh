@@ -727,8 +727,10 @@ ask_questions() {
     # ── Panel ────────────────────────────────────────────────────────────────
     local xui_db="/etc/x-ui/x-ui.db"
     local detected_port="" detected_path=""
+    # Existing inbound ports from DB (trusted — owned by xray, not external)
+    local trusted_ports=()
 
-    # If 3x-ui is already installed — read existing port/path from DB
+    # If 3x-ui is already installed — read existing settings and inbound ports from DB
     if [[ -f "$xui_db" ]]; then
         if ! command -v sqlite3 &>/dev/null; then
             apt-get install -y sqlite3 -qq 2>/dev/null || true
@@ -737,8 +739,20 @@ ask_questions() {
             detected_port=$(sqlite3 "$xui_db" "SELECT value FROM settings WHERE key='webPort';" 2>/dev/null || true)
             detected_path=$(sqlite3 "$xui_db" "SELECT value FROM settings WHERE key='webBasePath';" 2>/dev/null || true)
             detected_path=$(normalize_path "${detected_path:-}")
+            # Read all existing inbound ports
+            while IFS= read -r p; do
+                [[ -n "$p" ]] && trusted_ports+=("$p")
+            done < <(sqlite3 "$xui_db" "SELECT port FROM inbounds;" 2>/dev/null || true)
         fi
     fi
+
+    # Helper: read_port but skip conflict warning for trusted (xray-owned) ports
+    read_inbound_port() {
+        local varname="$1" desc="$2" default="$3"
+        local trusted_str
+        trusted_str=$(printf '%s\n' "${trusted_ports[@]:-}" | grep -x "$default" || true)
+        read_port "$varname" "$desc" "$default" "$trusted_str"
+    }
 
     echo -e "${dim}Если панель проксируется через Nginx — она доступна по HTTPS на вашем домене."
     echo -e "Если нет — только через SSH tunnel (ssh -L 2053:127.0.0.1:2053 root@сервер).${plain}"
@@ -777,7 +791,7 @@ ask_questions() {
     read -r WS_PATH
     WS_PATH=$(normalize_path "${WS_PATH:-$default_ws}")
 
-    read_port WS_PORT "Xray inbound порт для VLESS+WS" "10001"
+    read_inbound_port WS_PORT "Xray inbound порт для VLESS+WS" "10001"
     echo ""
 
     # ── gRPC ─────────────────────────────────────────────────────────────────
@@ -788,7 +802,7 @@ ask_questions() {
     GRPC_SERVICE="${GRPC_SERVICE:-$default_grpc}"
     GRPC_SERVICE="${GRPC_SERVICE// /}"  # no spaces
 
-    read_port GRPC_PORT "Xray inbound порт для VLESS+gRPC" "10002"
+    read_inbound_port GRPC_PORT "Xray inbound порт для VLESS+gRPC" "10002"
     echo ""
 
     # ── XHTTP ────────────────────────────────────────────────────────────────
@@ -798,12 +812,12 @@ ask_questions() {
     read -r XHTTP_PATH
     XHTTP_PATH=$(normalize_path "${XHTTP_PATH:-$default_xhttp}")
 
-    read_port XHTTP_PORT "Xray inbound порт для VLESS+XHTTP" "10003"
+    read_inbound_port XHTTP_PORT "Xray inbound порт для VLESS+XHTTP" "10003"
     echo ""
 
     # ── Reality ──────────────────────────────────────────────────────────────
     echo -e "${dim}Reality работает напрямую через Xray, без Nginx. Любой свободный порт.${plain}"
-    read_port REALITY_PORT "Порт для VLESS+Reality (прямое подключение)" "8443"
+    read_inbound_port REALITY_PORT "Порт для VLESS+Reality (прямое подключение)" "8443"
     echo ""
 
     # ── Summary ──────────────────────────────────────────────────────────────
