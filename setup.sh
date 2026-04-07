@@ -671,8 +671,12 @@ ask_questions() {
         warn "Панель будет доступна только через SSH tunnel"
     fi
 
-    local default_port="${detected_port:-2053}"
-    read_port PANEL_PORT "Порт панели 3x-ui" "$default_port" "$detected_port"
+    if [[ -n "$detected_port" ]]; then
+        PANEL_PORT="$detected_port"
+        info "Используем порт панели из 3x-ui: $PANEL_PORT"
+    else
+        read_port PANEL_PORT "Порт панели 3x-ui" "2053"
+    fi
     echo ""
 
     # ── WebSocket ────────────────────────────────────────────────────────────
