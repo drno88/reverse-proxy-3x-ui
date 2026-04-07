@@ -168,25 +168,71 @@ install_acme() {
     info "acme.sh установлен"
 }
 
+# ── Configure 3x-ui settings via SQLite ──────────────────────────────────────
+configure_3xui() {
+    local db="/etc/x-ui/x-ui.db"
+    [[ -f "$db" ]] || { warn "БД 3x-ui не найдена: $db"; return; }
+
+    # Install sqlite3 if needed (silently)
+    if ! command -v sqlite3 &>/dev/null; then
+        wait_dpkg
+        apt-get install -y sqlite3 -qq 2>/dev/null || { warn "sqlite3 не удалось установить, настройте панель вручную"; return; }
+    fi
+
+    info "Настраиваем 3x-ui: порт=$PANEL_PORT, path=$PANEL_PATH, SSL..."
+
+    sqlite3 "$db" "
+        INSERT OR REPLACE INTO settings (key, value) VALUES ('webPort',     '$PANEL_PORT');
+        INSERT OR REPLACE INTO settings (key, value) VALUES ('webBasePath', '$PANEL_PATH');
+        INSERT OR REPLACE INTO settings (key, value) VALUES ('webCertFile', '$CERT_FILE');
+        INSERT OR REPLACE INTO settings (key, value) VALUES ('webKeyFile',  '$KEY_FILE');
+    " || { warn "Ошибка записи в БД 3x-ui"; return; }
+
+    systemctl restart x-ui
+    sleep 2
+    systemctl is-active --quiet x-ui \
+        && info "3x-ui перезапущен с новыми настройками" \
+        || warn "x-ui не запустился после настройки — проверьте: systemctl status x-ui"
+}
+
 # ── Install 3x-ui ─────────────────────────────────────────────────────────────
 install_3xui() {
     step "3x-ui"
+
+    local already_installed=false
     if command -v x-ui &>/dev/null \
         || systemctl list-units --full -all 2>/dev/null | grep -q "x-ui.service"; then
+        already_installed=true
         info "3x-ui уже установлен"
         systemctl is-active --quiet x-ui \
             && info "Сервис x-ui запущен" \
-            || warn "Сервис x-ui не запущен: systemctl start x-ui"
-        return
+            || { warn "Сервис x-ui не запущен, запускаем..."; systemctl start x-ui; sleep 2; }
     fi
 
-    confirm "3x-ui не найден. Установить сейчас?" \
-        || { warn "Пропускаем установку 3x-ui"; return; }
+    if [[ "$already_installed" == false ]]; then
+        confirm "3x-ui не найден. Установить сейчас?" \
+            || { warn "Пропускаем установку 3x-ui"; return; }
 
-    info "Запускаем установщик 3x-ui..."
-    bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) \
-        || die "Ошибка при установке 3x-ui"
-    info "3x-ui установлен"
+        info "Устанавливаем 3x-ui..."
+        # Pipe answers to installer prompts:
+        #   1. "Customize port?" → n (skip, we'll set via SQLite)
+        #   2. "SSL option?"     → 3 (custom existing cert)
+        #   3. cert path        → $CERT_FILE
+        #   4. key path         → $KEY_FILE
+        printf 'n\n3\n%s\n%s\n' "$CERT_FILE" "$KEY_FILE" \
+            | bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) \
+            || true  # installer may exit non-zero, check service below
+
+        if ! command -v x-ui &>/dev/null \
+            && ! systemctl list-units --full -all 2>/dev/null | grep -q "x-ui.service"; then
+            die "3x-ui не установился — запустите установщик вручную"
+        fi
+        info "3x-ui установлен"
+        sleep 2
+    fi
+
+    # Always configure with our settings (port, path, SSL)
+    configure_3xui
 }
 
 # ── Obtain SSL certificate via acme.sh ───────────────────────────────────────
@@ -718,8 +764,8 @@ main() {
     disable_ufw
     install_nginx
     install_acme
-    install_3xui
     get_ssl
+    install_3xui
     write_nginx_config
     install_fail2ban
 
