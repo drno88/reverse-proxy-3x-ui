@@ -177,7 +177,9 @@ PANEL_USER=""
 PANEL_PASS=""
 
 # ── Configure 3x-ui settings ─────────────────────────────────────────────────
+# $1 = "true" if already installed (skip credential reset)
 configure_3xui() {
+    local was_installed="${1:-false}"
     local db="/etc/x-ui/x-ui.db"
     [[ -f "$db" ]] || { warn "БД 3x-ui не найдена: $db"; return; }
 
@@ -195,18 +197,23 @@ configure_3xui() {
         INSERT INTO settings (key, value) VALUES ('webBasePath', '$PANEL_PATH');
     " || { warn "Ошибка записи в БД 3x-ui"; return; }
 
-    # credentials via x-ui CLI (handles bcrypt internally)
-    PANEL_USER="admin"
-    PANEL_PASS="$(gen_random_string 14)"
-    if /usr/local/x-ui/x-ui setting \
-            -username  "$PANEL_USER" \
-            -password  "$PANEL_PASS" \
-            -resetTwoFactor false >/dev/null 2>&1; then
-        info "Логин/пароль панели обновлены"
-    else
+    # credentials: only set on fresh install
+    if [[ "$was_installed" == "true" ]]; then
         PANEL_USER=$(sqlite3 "$db" "SELECT username FROM users LIMIT 1;" 2>/dev/null || echo "?")
-        PANEL_PASS="(не изменён — задан при установке)"
-        warn "Не удалось сменить пароль панели — используйте тот что задали при установке"
+        PANEL_PASS="(не изменён)"
+        info "Учётные данные панели не тронуты (3x-ui уже был установлен)"
+    else
+        PANEL_USER="admin"
+        PANEL_PASS="$(gen_random_string 14)"
+        if /usr/local/x-ui/x-ui setting \
+                -username  "$PANEL_USER" \
+                -password  "$PANEL_PASS" \
+                -resetTwoFactor false >/dev/null 2>&1; then
+            info "Логин/пароль панели установлены"
+        else
+            PANEL_PASS="(задан установщиком 3x-ui)"
+            warn "Не удалось установить пароль — используйте тот что задали при установке"
+        fi
     fi
 
     systemctl restart x-ui
@@ -379,8 +386,8 @@ install_3xui() {
         sleep 2
     fi
 
-    # Always configure with our settings (port, path, credentials)
-    configure_3xui
+    # Configure settings (port, path); credentials only on fresh install
+    configure_3xui "$already_installed"
     create_inbounds
 }
 
