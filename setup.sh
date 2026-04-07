@@ -351,7 +351,7 @@ write_nginx_config() {
         panel_location_block="
     # ── 3x-ui Panel: ${PANEL_PATH} ───────────────────────────────────────────
     location ${PANEL_PATH}/ {
-        proxy_pass         http://127.0.0.1:${PANEL_PORT}/;
+        proxy_pass         http://127.0.0.1:${PANEL_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
