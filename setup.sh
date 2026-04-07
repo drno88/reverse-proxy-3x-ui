@@ -746,12 +746,18 @@ ask_questions() {
         fi
     fi
 
-    # Helper: read_port but skip conflict warning for trusted (xray-owned) ports
+    # Helper: ask for inbound port without conflict check (xray owns these ports)
     read_inbound_port() {
-        local varname="$1" desc="$2" default="$3"
-        local trusted_str
-        trusted_str=$(printf '%s\n' "${trusted_ports[@]:-}" | grep -x "$default" || true)
-        read_port "$varname" "$desc" "$default" "$trusted_str"
+        local varname="$1" desc="$2" default="$3" val
+        ask "$desc [Enter = $default]:"
+        read -r val
+        val="${val:-$default}"
+        if ! is_port_valid "$val"; then
+            err "Некорректный порт: $val (допустимо 1-65535)"
+            read_inbound_port "$@"
+            return
+        fi
+        printf -v "$varname" '%s' "$val"
     }
 
     echo -e "${dim}Если панель проксируется через Nginx — она доступна по HTTPS на вашем домене."
