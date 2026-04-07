@@ -171,6 +171,10 @@ install_acme() {
     info "acme.sh установлен"
 }
 
+# Global: panel credentials (set in configure_3xui, shown in show_instructions)
+PANEL_USER=""
+PANEL_PASS=""
+
 # ── Configure 3x-ui settings via SQLite ──────────────────────────────────────
 configure_3xui() {
     local db="/etc/x-ui/x-ui.db"
@@ -182,7 +186,7 @@ configure_3xui() {
         apt-get install -y sqlite3 -qq 2>/dev/null || { warn "sqlite3 не удалось установить, настройте панель вручную"; return; }
     fi
 
-    info "Настраиваем 3x-ui: порт=$PANEL_PORT, path=$PANEL_PATH, SSL..."
+    info "Настраиваем 3x-ui: порт=$PANEL_PORT, path=$PANEL_PATH..."
 
     # DELETE + INSERT to avoid duplicates (settings table has no UNIQUE on key)
     # Note: webCertFile/webKeyFile NOT set — SSL is handled by nginx, x-ui runs plain HTTP
@@ -191,6 +195,38 @@ configure_3xui() {
         INSERT INTO settings (key, value) VALUES ('webPort',     '$PANEL_PORT');
         INSERT INTO settings (key, value) VALUES ('webBasePath', '$PANEL_PATH');
     " || { warn "Ошибка записи в БД 3x-ui"; return; }
+
+    # Set admin credentials (generate random, hash with bcrypt via python3)
+    PANEL_USER="admin"
+    PANEL_PASS="$(gen_random_string 12)"
+    local hashed
+    hashed=$(python3 -c "
+import hashlib, os, base64, struct
+# bcrypt via built-in is not available; use a simple approach via subprocess
+import subprocess, sys
+try:
+    import bcrypt
+    h = bcrypt.hashpw('${PANEL_PASS}'.encode(), bcrypt.gensalt(rounds=10)).decode()
+    print(h)
+except ImportError:
+    # fallback: install bcrypt
+    subprocess.run([sys.executable, '-m', 'pip', 'install', 'bcrypt', '-q'], capture_output=True)
+    import bcrypt
+    h = bcrypt.hashpw('${PANEL_PASS}'.encode(), bcrypt.gensalt(rounds=10)).decode()
+    print(h)
+" 2>/dev/null) || true
+
+    if [[ -n "$hashed" ]]; then
+        sqlite3 "$db" "
+            DELETE FROM users;
+            INSERT INTO users (username, password) VALUES ('$PANEL_USER', '$hashed');
+        " && info "Учётные данные панели обновлены"
+    else
+        # Can't hash — read existing username, leave password as-is
+        PANEL_USER=$(sqlite3 "$db" "SELECT username FROM users LIMIT 1;" 2>/dev/null || echo "?")
+        PANEL_PASS="(оставлен без изменений — задан при установке 3x-ui)"
+        warn "Не удалось сгенерировать пароль — используйте существующий логин: $PANEL_USER"
+    fi
 
     systemctl restart x-ui
     sleep 2
@@ -704,13 +740,15 @@ show_instructions() {
 
     echo -e "${bold}━━━ Доступ к панели ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${plain}"
     if [[ "$PROXY_PANEL" == true ]]; then
-        echo -e "  URL: ${green}https://$DOMAIN$PANEL_PATH/${plain}"
-        echo ""
-        echo -e "  ${yellow}!${plain} URI Path уже настроен автоматически в 3x-ui: ${bold}$PANEL_PATH${plain}"
+        echo -e "  URL:      ${green}https://$DOMAIN$PANEL_PATH/${plain}"
     else
         echo -e "  Панель доступна ${bold}только через SSH tunnel${plain}:"
         echo -e "  ${dim}ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@<IP сервера>${plain}"
         echo -e "  Затем открыть: ${green}http://localhost:$PANEL_PORT${plain}"
+    fi
+    if [[ -n "$PANEL_USER" ]]; then
+        echo -e "  Логин:    ${bold}$PANEL_USER${plain}"
+        echo -e "  Пароль:   ${bold}$PANEL_PASS${plain}"
     fi
     echo ""
 
