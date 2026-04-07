@@ -185,12 +185,11 @@ configure_3xui() {
     info "Настраиваем 3x-ui: порт=$PANEL_PORT, path=$PANEL_PATH, SSL..."
 
     # DELETE + INSERT to avoid duplicates (settings table has no UNIQUE on key)
+    # Note: webCertFile/webKeyFile NOT set — SSL is handled by nginx, x-ui runs plain HTTP
     sqlite3 "$db" "
         DELETE FROM settings WHERE key IN ('webPort','webBasePath','webCertFile','webKeyFile');
         INSERT INTO settings (key, value) VALUES ('webPort',     '$PANEL_PORT');
         INSERT INTO settings (key, value) VALUES ('webBasePath', '$PANEL_PATH');
-        INSERT INTO settings (key, value) VALUES ('webCertFile', '$CERT_FILE');
-        INSERT INTO settings (key, value) VALUES ('webKeyFile',  '$KEY_FILE');
     " || { warn "Ошибка записи в БД 3x-ui"; return; }
 
     systemctl restart x-ui
